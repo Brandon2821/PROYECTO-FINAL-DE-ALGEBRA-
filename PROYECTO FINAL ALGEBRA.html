@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Motor de transformaciones 2D</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+:root{--bg:#eef1f6;--plane:#fbfcfe;--grid:#e1e6ee;--gridS:#c7d0de;--axis:#5b6b85;--ink:#16202f;--mut:#5d6b80;--hud:#fff;--line:#c7d0de;--ship:#12a38a;--shipE:#0b6b5c;--ghost:#9aa6ba;--nose:#d99200;--ttl:#1c5fb0;--ok:#16783a;--warn:#a35f00;--bad:#c62828;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b0f16;--plane:#0e121a;--grid:#1d2535;--gridS:#33425c;--axis:#8294b4;--ink:#d6deeb;--mut:#8a98ae;--hud:#0a0d13;--line:#2a374d;--ship:#40bea0;--shipE:#bef7ea;--ghost:#5a6579;--nose:#ffd25a;--ttl:#78c8ff;--ok:#6ee68c;--warn:#ffd25a;--bad:#ff6b6b}}
+:root[data-theme="dark"]{--bg:#0b0f16;--plane:#0e121a;--grid:#1d2535;--gridS:#33425c;--axis:#8294b4;--ink:#d6deeb;--mut:#8a98ae;--hud:#0a0d13;--line:#2a374d;--ship:#40bea0;--shipE:#bef7ea;--ghost:#5a6579;--nose:#ffd25a;--ttl:#78c8ff;--ok:#6ee68c;--warn:#ffd25a;--bad:#ff6b6b}
+*{box-sizing:border-box}
+html{color-scheme:light dark;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 14px/1.45 "IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace}
+.app{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:minmax(0,800px) minmax(300px,400px);align-items:start}
+@media (max-width:1100px){.app{grid-template-columns:1fr}}
+canvas{display:block;width:100%;height:auto;aspect-ratio:8/7;background:var(--plane);cursor:crosshair;touch-action:none;-webkit-user-select:none;user-select:none}
+.hud{background:var(--hud);border-left:1px solid var(--line);padding:14px 16px;min-height:100%}
+h1{font-size:1.05rem;margin:0 0 8px;color:var(--ttl);font-weight:600}
+h2{font-size:.85rem;margin:12px 0 2px;color:var(--ttl);font-weight:600}
+.m{white-space:pre;margin:0;font:inherit}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}.mut{color:var(--mut)}
+.bar{display:flex;flex-wrap:wrap;gap:6px;padding:10px 12px;background:var(--hud);border-top:1px solid var(--line)}
+button{font:inherit;font-size:.82rem;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:6px 10px;cursor:pointer;user-select:none;touch-action:manipulation}
+button:focus-visible{outline:3px solid var(--ttl);outline-offset:2px}
+button.on{background:var(--ttl);color:var(--hud)}
+.pad{display:flex;flex-wrap:wrap;gap:6px;margin-left:auto}
+#log{max-height:260px;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;font-size:.78rem;margin-top:6px;white-space:pre}
+</style>
+</head>
+<body>
+<div class="app">
+  <div>
+    <canvas id="cv" width="800" height="700" aria-label="Plano cartesiano con la nave triangular"></canvas>
+    <div class="bar" id="bar"></div>
+  </div>
+  <aside class="hud">
+    <h1>HUD · Transformaciones 2D</h1>
+    <div id="hud"></div>
+    <h2>Pasos intermedios (casos 1, 2, 3)</h2>
+    <div id="log" tabindex="0">Pulse 1, 2 o 3 para ver aquí T, R, S, M, det(M), M⁻¹ y V′.</div>
+    <p class="mut" style="font-size:.78rem">Flechas: trasladar · Q/E: rotar · W/S: escalar · C: orden · Clic corto: DENTRO/FUERA · Arrastrar (o clic derecho): mover el plano · Rueda / + −: zoom · R: reiniciar (incluye la vista)</p>
+  </aside>
+</div>
+<script>
+"use strict";
+// =============== 1. MATEMÁTICAS DESDE CERO (matrices 3x3 homogéneas) ===============
+const EPS = 1e-9;                      // |det| < EPS  =>  matriz singular
+class MatrizSingularError extends Error {}
+const V = [[0, -20, 20], [30, -20, -20], [1, 1, 1]];          // un vértice por columna
+const NOMBRES = ["A (nariz)", "B (izq.)", "C (der.)"];
+
+// C[i][j] = suma_k A[i][k]·B[k][j]  (fila de A por columna de B)
+function multiplicarMatrices(A, B) {
+  const m = A.length, n = A[0].length, p = B[0].length;
+  if (n !== B.length) throw new Error("Dimensiones incompatibles");
+  const C = Array.from({ length: m }, () => Array(p).fill(0));
+  for (let i = 0; i < m; i++) for (let j = 0; j < p; j++) { let s = 0; for (let k = 0; k < n; k++) s += A[i][k] * B[k][j]; C[i][j] = s; }
+  return C;
+}
+const crearTraslacion = (dx, dy) => [[1, 0, dx], [0, 1, dy], [0, 0, 1]];
+const crearRotacion = g => { const a = g * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); return [[c, -s, 0], [s, c, 0], [0, 0, 1]]; };
+const crearEscalado = (sx, sy) => [[sx, 0, 0], [0, sy, 0], [0, 0, 1]];
+// det = a(ei − fh) − b(di − fg) + c(dh − eg)
+function determinante3x3(M) {
+  const [a, b, c] = M[0], [d, e, f] = M[1], [g, h, i] = M[2];
+  return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+}
+// M⁻¹ = adj(M) / det(M); si det = 0 lanza MatrizSingularError
+function inversa3x3(M) {
+  const det = determinante3x3(M);
+  if (Math.abs(det) < EPS) throw new MatrizSingularError("Matriz Singular (No invertible): det(M) = 0");
+  const [a, b, c] = M[0], [d, e, f] = M[1], [g, h, i] = M[2];
+  const cof = [[e * i - f * h, -(d * i - f * g), d * h - e * g],
+               [-(b * i - c * h), a * i - c * g, -(a * h - b * g)],
+               [b * f - c * e, -(a * f - c * d), a * e - b * d]];
+  return [0, 1, 2].map(k => [0, 1, 2].map(j => cof[j][k] / det));   // adj = cofactores transpuestos
+}
+const inversaSegura = M => { try { return [inversa3x3(M), null]; } catch (e) { if (e instanceof MatrizSingularError) return [null, e.message]; throw e; } };
+
+// =============== 2. ESTADO ===============
+const est = { dx: 0, dy: 0, th: 0, sx: 1, sy: 1, orden: "TRS", clic: null };
+const reiniciar = () => Object.assign(est, { dx: 0, dy: 0, th: 0, sx: 1, sy: 1, orden: "TRS", clic: null });
+function construir() {
+  const T = crearTraslacion(est.dx, est.dy), R = crearRotacion(est.th), S = crearEscalado(est.sx, est.sy);
+  const M = est.orden === "TRS" ? multiplicarMatrices(multiplicarMatrices(T, R), S) : multiplicarMatrices(multiplicarMatrices(R, T), S);
+  return { T, R, S, M };
+}
+// p_local = M⁻¹·p y prueba del triángulo original por signo de productos cruzados
+function puntoEnNave(Minv, x, y) {
+  const p = multiplicarMatrices(Minv, [[x], [y], [1]]), px = p[0][0], py = p[1][0];
+  const P = [0, 1, 2].map(k => [V[0][k], V[1][k]]);
+  const cr = (A, B) => (B[0] - A[0]) * (py - A[1]) - (B[1] - A[1]) * (px - A[0]);
+  const c = [cr(P[0], P[1]), cr(P[1], P[2]), cr(P[2], P[0])];
+  return { dentro: c.every(v => v >= -EPS) || c.every(v => v <= EPS), local: [px, py] };
+}
+
+// =============== 3. CASOS DE PRUEBA (salida en el panel y en la consola) ===============
+const num = (v, d) => { if (Math.abs(v) < 0.5 * Math.pow(10, -d)) v = 0; return v.toFixed(d); };
+const mtxt = (M, d = 4) => M.map(f => "  [" + f.map(v => num(v, d).padStart(d + 5)).join(" ") + " ]").join("\n");
+function pasos(titulo) {
+  const { T, R, S, M } = construir(), det = determinante3x3(M), [Mi, err] = inversaSegura(M), Vp = multiplicarMatrices(M, V);
+  let t = titulo + "\n" + "=".repeat(titulo.length) + "\n";
+  t += `dx=${est.dx}, dy=${est.dy}, theta=${est.th}°, sx=${est.sx}, sy=${est.sy}\nOrden: M = ${est.orden.split("").join(" · ")}\n`;
+  t += "\nT =\n" + mtxt(T) + "\n\nR =\n" + mtxt(R) + "\n\nS =\n" + mtxt(S) + "\n\nM =\n" + mtxt(M) + `\n\ndet(M) = ${det.toFixed(4)}\n`;
+  t += Mi ? "\nM^-1 =\n" + mtxt(Mi) + "\n\nM · M^-1 (debe ser I3) =\n" + mtxt(multiplicarMatrices(M, Mi)) : "\nM^-1: NO EXISTE -> " + err;
+  t += "\n\nV' = M · V =\n" + mtxt(Vp) + "\n" + NOMBRES.map((n, k) => `  ${n}: (${num(Vp[0][k], 4)}, ${num(Vp[1][k], 4)})`).join("\n");
+  return t;
+}
+function mostrarLog(t) { document.getElementById("log").textContent = t; }   // solo en el panel, sin mensajes en la consola
+function caso1() {
+  reiniciar(); Object.assign(est, { dx: 100, dy: 50, th: 45, sx: 2, sy: 2 });
+  let t = pasos("CASO 1: NORMAL / MANUAL (T · R · S)");
+  est.orden = "RTS"; t += "\n\nCon el orden R · T · S, M sería:\n" + mtxt(construir().M); est.orden = "TRS";
+  mostrarLog(t);
+}
+function caso2() { reiniciar(); est.sx = -1; est.sy = 1; mostrarLog(pasos("CASO 2: REFLEXIÓN (sx = −1, sy = 1)")); }
+function caso3() { reiniciar(); est.sx = 0; est.sy = 0; mostrarLog(pasos("CASO 3: LÍMITE / ERROR (sx = 0, sy = 0)")); }
+
+// =============== 4. DIBUJO (canvas) con vista tipo GeoGebra ===============
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d"), W = 800, H = 700;
+const VISTA0 = { ox: 400, oy: 350, k: 1 };           // origen en pantalla (px) y escala (px por unidad)
+const vista = Object.assign({}, VISTA0);
+const K_MIN = 0.02, K_MAX = 500;
+const P2S = (x, y) => [vista.ox + x * vista.k, vista.oy - y * vista.k];
+const S2P = (sx, sy) => [(sx - vista.ox) / vista.k, (vista.oy - sy) / vista.k];
+const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+const css = () => { const s = getComputedStyle(document.documentElement); return k => s.getPropertyValue("--" + k).trim(); };
+
+function zoomEn(sx, sy, f) {                           // zoom centrado en el punto de pantalla (sx, sy)
+  const nk = clamp(vista.k * f, K_MIN, K_MAX); f = nk / vista.k;
+  vista.ox = sx - (sx - vista.ox) * f; vista.oy = sy - (sy - vista.oy) * f; vista.k = nk;
+}
+// paso "bonito" 1, 2, 5 · 10^n tal que la separación en pantalla sea de unos 60-150 px
+function pasoCuadricula(k) {
+  const objetivo = 60 / k, p = Math.pow(10, Math.floor(Math.log10(objetivo))), m = objetivo / p;
+  const f = m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10, paso = f * p;
+  return { paso, div: f === 2 ? 4 : 5, dec: Math.max(0, -Math.floor(Math.log10(paso) + 1e-9)) };
+}
+function lsc(x1, y1, x2, y2, col, w) { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function poly(pts, relleno, borde, w) {
+  ctx.beginPath(); pts.forEach(([x, y], k) => k ? ctx.lineTo(...P2S(x, y)) : ctx.moveTo(...P2S(x, y))); ctx.closePath();
+  if (relleno) { ctx.fillStyle = relleno; ctx.fill(); } ctx.strokeStyle = borde; ctx.lineWidth = w; ctx.stroke();
+}
+function punto(x, y, r, col, w) { ctx.beginPath(); ctx.arc(...P2S(x, y), r, 0, 7); if (w) { ctx.strokeStyle = col; ctx.lineWidth = w; ctx.stroke(); } else { ctx.fillStyle = col; ctx.fill(); } }
+function texto(t, x, y, col, halo, align) {            // texto con contorno para que se lea sobre la cuadrícula
+  ctx.textAlign = align || "left"; ctx.lineJoin = "round"; ctx.lineWidth = 3; ctx.strokeStyle = halo; ctx.strokeText(t, x, y); ctx.fillStyle = col; ctx.fillText(t, x, y);
+}
+function cuadricula(c) {
+  const { paso, div, dec } = pasoCuadricula(vista.k), menor = paso / div;
+  const [xmin, ymax] = S2P(0, 0), [xmax, ymin] = S2P(W, H);
+  ctx.globalAlpha = 0.6;                               // subcuadrícula fina
+  for (let i = Math.ceil(xmin / menor); i <= Math.floor(xmax / menor); i++) if (i % div) { const sx = P2S(i * menor, 0)[0]; lsc(sx, 0, sx, H, c("grid"), 1); }
+  for (let i = Math.ceil(ymin / menor); i <= Math.floor(ymax / menor); i++) if (i % div) { const sy = P2S(0, i * menor)[1]; lsc(0, sy, W, sy, c("grid"), 1); }
+  ctx.globalAlpha = 1;
+  const i0x = Math.ceil(xmin / paso), i1x = Math.floor(xmax / paso), i0y = Math.ceil(ymin / paso), i1y = Math.floor(ymax / paso);
+  for (let i = i0x; i <= i1x; i++) { const sx = P2S(i * paso, 0)[0]; lsc(sx, 0, sx, H, c("gridS"), 1); }
+  for (let i = i0y; i <= i1y; i++) { const sy = P2S(0, i * paso)[1]; lsc(0, sy, W, sy, c("gridS"), 1); }
+  lsc(0, vista.oy, W, vista.oy, c("axis"), 2); lsc(vista.ox, 0, vista.ox, H, c("axis"), 2);   // ejes
+  // números de los ejes (se pegan al borde si el eje sale de la pantalla, como GeoGebra)
+  ctx.font = '12px "IBM Plex Mono",monospace'; ctx.textBaseline = "alphabetic";
+  const yl = clamp(vista.oy + 16, 14, H - 6), izq = vista.ox < 42;
+  const xl = izq ? Math.max(vista.ox + 6, 4) : Math.min(vista.ox - 6, W - 6);
+  for (let i = i0x; i <= i1x; i++) if (i) texto((i * paso).toFixed(dec), P2S(i * paso, 0)[0], yl, c("axis"), c("plane"), "center");
+  for (let i = i0y; i <= i1y; i++) if (i) texto((i * paso).toFixed(dec), xl, P2S(0, i * paso)[1] + 4, c("axis"), c("plane"), izq ? "left" : "right");
+  if (vista.ox > 0 && vista.ox < W && vista.oy > 0 && vista.oy < H) texto("0", vista.ox - 6, vista.oy + 16, c("axis"), c("plane"), "right");
+  ctx.font = 'bold 13px "IBM Plex Mono",monospace';
+  texto("X", W - 14, clamp(vista.oy - 8, 14, H - 6), c("ttl"), c("plane"), "center");
+  texto("Y", clamp(vista.ox + 14, 8, W - 8), 16, c("ttl"), c("plane"), "center");
+}
+function dibujar(c, Vp, det, Mi) {
+  ctx.clearRect(0, 0, W, H); ctx.fillStyle = c("plane"); ctx.fillRect(0, 0, W, H);
+  cuadricula(c);
+  poly([0, 1, 2].map(k => [V[0][k], V[1][k]]), null, c("ghost"), 1);                 // nave original (fantasma)
+  const pts = [0, 1, 2].map(k => [Vp[0][k], Vp[1][k]]);
+  if (Math.abs(det) < EPS) { punto(pts[0][0], pts[0][1], 6, c("bad")); punto(pts[0][0], pts[0][1], 11, c("nose"), 1.5); }   // colapso a un punto
+  else { poly(pts, c("ship"), c("shipE"), 2); punto(pts[0][0], pts[0][1], 5, c("nose")); }
+  let res = null;
+  if (est.clic) {
+    const [x, y] = est.clic, [sx, sy] = P2S(x, y); let col, txt;
+    if (!Mi) { txt = "M no invertible"; col = c("bad"); } else { const r = puntoEnNave(Mi, x, y); res = r; txt = r.dentro ? "DENTRO" : "FUERA"; col = r.dentro ? c("ok") : c("bad"); }
+    lsc(sx - 7, sy, sx + 7, sy, col, 2); lsc(sx, sy - 7, sx, sy + 7, col, 2);
+    ctx.font = 'bold 15px "IBM Plex Mono",monospace'; texto(txt, sx + 10, sy - 12, col, c("plane"), "left");
+  }
+  return res;
+}
+
+// =============== 5. HUD ===============
+const hudEl = document.getElementById("hud");
+const matHTML = (M, cls = "") => `<pre class="m ${cls}">` + M.map(f => "[" + f.map(v => num(v, 2).padStart(8)).join("") + " ]").join("\n") + "</pre>";
+function hud(M, det, Mi, Vp, res) {
+  let efecto = Math.abs(Math.abs(det) - 1) < 1e-6 ? "se conserva" : Math.abs(det) > 1 ? "AUMENTA" : "DISMINUYE";
+  let h = `<div class="mut">Orden: M = ${est.orden.split("").join(" · ")} (C para alternar)</div><h2>Parámetros</h2><pre class="m">dx = ${num(est.dx, 2).padStart(8)}   dy = ${num(est.dy, 2).padStart(8)}\ntheta = ${(((est.th % 360) + 360) % 360).toFixed(2).padStart(7)}°\nsx = ${num(est.sx, 2).padStart(8)}   sy = ${num(est.sy, 2).padStart(8)}</pre>`;
+  h += "<h2>M (compuesta)</h2>" + matHTML(M);
+  h += Math.abs(det) < EPS ? `<div class="bad">det(M) = 0.00 → área colapsada</div>` : `<div class="${det > 0 ? "ok" : "warn"}">det(M) = ${det.toFixed(2)} → área ${efecto}</div>` + (det < 0 ? `<div class="warn">det &lt; 0: reflexión (invierte la orientación)</div>` : "");
+  h += `<div class="mut">Área de la nave: ${(Math.abs(det) * 1000).toFixed(1)} u² (original 1000)</div><h2>M⁻¹ (inversa por cofactores)</h2>`;
+  h += Mi ? matHTML(Mi) : `<div class="bad">ALERTA: Matriz Singular<br>(No invertible, det(M) = 0)</div>`;
+  h += "<h2>V′ = M · V</h2><pre class=\"m\">" + NOMBRES.map((n, k) => `${n}: (${num(Vp[0][k], 2).padStart(7)}, ${num(Vp[1][k], 2).padStart(7)})`).join("\n") + "</pre><h2>Clic (M⁻¹ · p)</h2>";
+  if (!est.clic) h += `<div class="mut">Haga clic en el plano</div>`;
+  else if (!Mi) h += `<div class="bad">M no invertible: no se puede evaluar</div>`;
+  else h += `<div class="${res.dentro ? "ok" : "bad"}">Punto (${est.clic[0].toFixed(1)}, ${est.clic[1].toFixed(1)}) → ${res.dentro ? "DENTRO" : "FUERA"}</div><div class="mut">Local: (${res.local[0].toFixed(2)}, ${res.local[1].toFixed(2)})</div>`;
+  hudEl.innerHTML = h;
+}
+
+// =============== 6. CONTROLES Y BUCLE ===============
+const teclas = new Set();
+const KEYMAP = { arrowleft: 1, arrowright: 1, arrowup: 1, arrowdown: 1, q: 1, e: 1, w: 1, s: 1 };
+addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if (k in KEYMAP) { teclas.add(k); e.preventDefault(); }
+  else if (!e.repeat) accion(k);
+});
+addEventListener("keyup", e => teclas.delete(e.key.toLowerCase()));
+addEventListener("blur", () => teclas.clear());
+function accion(k) {
+  if (k === "c") est.orden = est.orden === "TRS" ? "RTS" : "TRS";
+  else if (k === "r") { reiniciar(); Object.assign(vista, VISTA0); }
+  else if (k === "+" || k === "=") zoomEn(W / 2, H / 2, 1.25);
+  else if (k === "-" || k === "_") zoomEn(W / 2, H / 2, 1 / 1.25);
+  else if (k === "1") caso1(); else if (k === "2") caso2(); else if (k === "3") caso3();
+}
+// --- Ratón / táctil: arrastrar = mover el plano; clic corto sin arrastrar = evaluar DENTRO/FUERA ---
+const cpos = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height]; };
+const ptrs = new Map(); let arr = null;
+cv.addEventListener("contextmenu", e => e.preventDefault());
+cv.addEventListener("pointerdown", e => {
+  cv.setPointerCapture(e.pointerId); const p = cpos(e); ptrs.set(e.pointerId, p);
+  if (ptrs.size === 1) arr = { ini: p, last: p, cx: e.clientX, cy: e.clientY, mov: false, btn: e.button };
+  else if (arr) arr.mov = true;                                                      // 2.º dedo: pellizco, nunca es un clic
+});
+cv.addEventListener("pointermove", e => {
+  if (!ptrs.has(e.pointerId)) return;
+  const p = cpos(e), ant = ptrs.get(e.pointerId); ptrs.set(e.pointerId, p);
+  if (ptrs.size === 2) {                                                             // pellizco: zoom + desplazamiento
+    const o = [...ptrs.keys()].find(id => id !== e.pointerId), q = ptrs.get(o);
+    const m0 = [(ant[0] + q[0]) / 2, (ant[1] + q[1]) / 2], m1 = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+    const d0 = Math.hypot(ant[0] - q[0], ant[1] - q[1]), d1 = Math.hypot(p[0] - q[0], p[1] - q[1]);
+    vista.ox += m1[0] - m0[0]; vista.oy += m1[1] - m0[1]; if (d0 > 1) zoomEn(m1[0], m1[1], d1 / d0);
+    return;
+  }
+  if (!arr) return;
+  if (!arr.mov && (arr.btn === 2 || Math.hypot(e.clientX - arr.cx, e.clientY - arr.cy) > 5)) { arr.mov = true; cv.style.cursor = "grabbing"; }
+  if (arr.mov) { vista.ox += p[0] - arr.last[0]; vista.oy += p[1] - arr.last[1]; arr.last = p; }
+});
+function soltar(e) {
+  if (!ptrs.has(e.pointerId)) return;
+  if (e.type === "pointerup" && ptrs.size === 1 && arr && !arr.mov && arr.btn === 0) est.clic = S2P(...arr.ini);   // clic corto
+  ptrs.delete(e.pointerId);
+  if (ptrs.size === 0) { arr = null; cv.style.cursor = ""; } else if (arr) arr.last = [...ptrs.values()][0];
+}
+cv.addEventListener("pointerup", soltar); cv.addEventListener("pointercancel", soltar);
+cv.addEventListener("wheel", e => { e.preventDefault(); const p = cpos(e); zoomEn(p[0], p[1], Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015))); }, { passive: false });
+// Botones en pantalla (útiles en móvil): acciones y teclas mantenidas
+const bar = document.getElementById("bar");
+[["1 Normal", "1"], ["2 Reflexión", "2"], ["3 Singular", "3"], ["C Orden", "c"], ["R Reiniciar", "r"]].forEach(([t, k]) => {
+  const b = document.createElement("button"); b.textContent = t; b.onclick = () => accion(k); bar.appendChild(b);
+});
+[["＋", "+", "Acercar (zoom in)"], ["－", "-", "Alejar (zoom out)"]].forEach(([t, k, l]) => {
+  const b = document.createElement("button"); b.textContent = t; b.title = l; b.setAttribute("aria-label", l); b.onclick = () => accion(k); bar.appendChild(b);
+});
+const pad = document.createElement("div"); pad.className = "pad"; bar.appendChild(pad);
+[["←", "arrowleft"], ["↑", "arrowup"], ["↓", "arrowdown"], ["→", "arrowright"], ["Q ↺", "q"], ["E ↻", "e"], ["W +", "w"], ["S −", "s"]].forEach(([t, k]) => {
+  const b = document.createElement("button"); b.textContent = t; b.setAttribute("aria-label", t);
+  b.addEventListener("pointerdown", ev => { ev.preventDefault(); teclas.add(k); });
+  ["pointerup", "pointerleave", "pointercancel"].forEach(n => b.addEventListener(n, () => teclas.delete(k)));
+  pad.appendChild(b);
+});
+
+let previo = performance.now();
+function cuadro(ahora) {
+  const dt = Math.min((ahora - previo) / 1000, 0.05); previo = ahora;
+  const vT = 200, vR = 90, vE = 1;                              // u/s, grados/s, escala/s
+  if (teclas.has("arrowleft")) est.dx -= vT * dt; if (teclas.has("arrowright")) est.dx += vT * dt;
+  if (teclas.has("arrowup")) est.dy += vT * dt; if (teclas.has("arrowdown")) est.dy -= vT * dt;
+  if (teclas.has("q")) est.th += vR * dt; if (teclas.has("e")) est.th -= vR * dt;
+  if (teclas.has("w")) { est.sx += vE * dt; est.sy += vE * dt; }
+  if (teclas.has("s")) { est.sx -= vE * dt; est.sy -= vE * dt; }
+  const { M } = construir(), det = determinante3x3(M), [Mi] = inversaSegura(M), Vp = multiplicarMatrices(M, V);
+  const res = dibujar(css(), Vp, det, Mi);
+  hud(M, det, Mi, Vp, res);
+  requestAnimationFrame(cuadro);
+}
+requestAnimationFrame(cuadro);
+</script>
+</body>
+</html>
